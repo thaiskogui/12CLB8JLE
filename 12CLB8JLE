@@ -1,0 +1,239 @@
+import os 
+
+import cv2 
+
+import numpy as np 
+
+import matplotlib.pyplot as plt 
+
+from PIL import Image 
+
+from skimage.feature import peak_local_max 
+
+from skimage.segmentation import watershed 
+
+from scipy import ndimage as ndi 
+
+import pandas as pd 
+
+ 
+
+# Diretório das imagens 
+
+diretorio_das_imagens = '...\\imagens\\' 
+
+ 
+
+# Lista todos os arquivos no diretório 
+
+arquivos_imagens = os.listdir(diretorio_das_imagens) 
+
+ 
+
+# Lista para armazenar os dados 
+
+dados = [] 
+
+ 
+
+# Fator de conversão de micrômetros para milímetros 
+
+fator_conversao = 5.94 / 1000  # inserir resolução do pixel da imagem 
+
+ 
+
+# Itera sobre os arquivos e processa cada imagem 
+
+for arquivo in arquivos_imagens: 
+
+    # Verifica se o arquivo é uma imagem (pode adicionar mais extensões se necessário) 
+
+    if arquivo.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')): 
+
+        # Constrói o caminho completo para a imagem 
+
+        caminho_completo = os.path.join(diretorio_das_imagens, arquivo) 
+
+ 
+
+        # Abrindo a imagem 
+
+        imagem = Image.open(caminho_completo) 
+
+         
+
+        # Conversão da imagem em "array numpy" para visualização e processamento 
+
+        imagem_array = np.array(imagem) 
+
+         
+
+        # Inversão das cores 
+
+        inv_imagem_array = 255 - imagem_array 
+
+             
+
+        # Desfoque gaussiano 
+
+        desfoque = cv2.GaussianBlur(inv_imagem_array, (5, 5), 0)     
+
+         
+
+        # Método de Otsu - limiar global, ou seja, em toda a imagem, de forma automática 
+
+        valor, otsu = cv2.threshold(desfoque, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU) 
+
+         
+
+        # Plotando a matriz de distância 
+
+        dist = ndi.distance_transform_edt(otsu) 
+
+         
+
+        # Localizando os máximos locais na matriz de distância 
+
+        local_max = peak_local_max(dist,  indices=False, min_distance=20, labels=otsu) 
+
+         
+
+        # Rotulando os máximos locais 
+
+        markers = ndi.label(local_max, structure=np.ones((3, 3)))[0] 
+
+         
+
+        # Aplicando watershed 
+
+        labels = watershed(-dist, markers, mask=otsu) 
+
+         
+
+        # Individualizando as partículas 
+
+        img_final = labels.copy() 
+
+         
+
+        # Área total de todas as partículas do arquivo 
+
+        area_total_arquivo = 0 
+
+         
+
+        for label in np.unique(labels): 
+
+            if label == 0: 
+
+                continue 
+
+            mascara = np.zeros(otsu.shape, dtype='uint8') 
+
+            mascara[labels == label] = 255 
+
+            cnts = cv2.findContours(mascara.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[-2] 
+
+             
+
+            for c in cnts: 
+
+                # Calcular área da partícula em pixels 
+
+                area_pixel = cv2.contourArea(c) 
+
+                 
+
+                # Calcular área da partícula em mm² 
+
+                area_mm2_particula = area_pixel * (fator_conversao ** 2) 
+
+                 
+
+                # Adicionar área da partícula à área total do arquivo 
+
+                area_total_arquivo += area_mm2_particula 
+
+ 
+
+        # Converter a imagem final para o formato correto (CV_8UC1) 
+
+        img_final_gray = (img_final.copy() * 255).astype(np.uint8) 
+
+         
+
+        # Encontrar os contornos das partículas na imagem final 
+
+        contours, _ = cv2.findContours(img_final_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) 
+
+ 
+
+        # Calcular o menor círculo que circunscreve todos os contornos 
+
+        (x, y), radius = cv2.minEnclosingCircle(np.concatenate(contours)) 
+
+ 
+
+        # Calcular a área do menor círculo circunscrito em mm² 
+
+        area_circulo_mm2 = np.pi * (radius * fator_conversao)**2 
+
+         
+
+        # Área de vazios 
+
+        area_vazios_mm2 = area_circulo_mm2 - area_total_arquivo 
+
+         
+
+        # Índice de vazios 
+
+        indice_vazios_na_slice = area_vazios_mm2 / area_total_arquivo if area_total_arquivo != 0 else 0 
+
+         
+
+        # Porosidade 
+
+        porosidade_na_slice = area_vazios_mm2 / area_circulo_mm2 
+
+         
+
+        # Adicionar os dados à lista 
+
+        dados.append({ 
+
+            'Nome do arquivo': arquivo, 
+
+            'Área do menor círculo circunscrito (mm²)': area_circulo_mm2, 
+
+            'Área total de todas as partículas do arquivo (mm²)': area_total_arquivo, 
+
+            'Área de vazios (mm²)': area_vazios_mm2, 
+
+            'Índice de vazios na slice': indice_vazios_na_slice, 
+
+            'Porosidade na slice': porosidade_na_slice 
+
+        }) 
+
+ 
+
+# Criar DataFrame a partir dos dados 
+
+df = pd.DataFrame(dados) 
+
+ 
+
+# Calcular e imprimir o Índice de vazios da amostra 
+
+indice_vazios_amostra = df['Índice de vazios na slice'].mean() 
+
+print(f'Índice de vazios da amostra: {indice_vazios_amostra}') 
+
+ 
+
+# Calcular e imprimir a Porosidade da amostra 
+
+porosidade_amostra = df['Porosidade na slice'].mean() 
+
+print(f'Porosidade da amostra: {porosidade_amostra}') 
